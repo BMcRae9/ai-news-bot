@@ -3,7 +3,7 @@ name: Daily AI News Digest
 on:
   # Run daily at 0:00 AM UTC (adjust as needed)
   schedule:
-    - cron: "0 0 * * *"
+    - cron: "15 11 * * 1-5"
 
   # Allow manual trigger
   workflow_dispatch:
@@ -87,3 +87,77 @@ jobs:
           path: |
             *.log
           retention-days: 7
+    - name: Convert briefing to natural audio (Azure Neural TTS)
+      run: |
+        pip install requests
+        python - <<'EOF'
+        import os
+        import requests
+
+        with open('news_output.txt', 'r', encoding='utf-8') as f:
+            text = f.read().strip()
+
+        subscription_key = os.environ['AZURE_SPEECH_KEY']
+        region = os.environ['AZURE_SPEECH_REGION']
+        url = f"https://{region}.tts.speech.microsoft.com/cognitiveservices/v1"
+
+        ssml = f'''<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US">
+          <voice name="en-US-AndrewNeural">
+            <prosody rate="0.95" pitch="0%">
+              {text}
+            </prosody>
+          </voice>
+        </speak>'''
+
+        headers = {
+            "Ocp-Apim-Subscription-Key": subscription_key,
+            "Content-Type": "application/ssml+xml",
+            "X-Microsoft-OutputFormat": "audio-48khz-192kbitrate-mono-mp3",
+            "User-Agent": "BryceMorningBrief"
+        }
+
+        response = requests.post(url, headers=headers, data=ssml.encode('utf-8'))
+
+        if response.status_code == 200:
+            with open("morning_briefing.mp3", "wb") as f:
+                f.write(response.content)
+            print("✅ Audio generated")
+        else:
+            print(f"❌ TTS Error: {response.status_code}")
+            raise Exception("TTS failed")
+        EOF
+
+    - name: Email the MP3 audio briefing
+      run: |
+        python - <<'EOF'
+        import smtplib, os
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.base import MIMEBase
+        from email.mime.text import MIMEText
+        from email import encoders
+        from datetime import date
+
+        msg = MIMEMultipart()
+        msg['From'] = os.environ['GMAIL_ADDRESS']
+        msg['To'] = os.environ['EMAIL_TO']
+        msg['Subject'] = f"🎙️ Morning Briefing Audio — {date.today().strftime('%B %d, %Y')}"
+        msg.attach(MIMEText("Your 25-30 minute morning intelligence briefing is attached. Play while walking or in the gym.", 'plain'))
+
+        with open('morning_briefing.mp3', 'rb') as f:
+            part = MIMEBase('audio', 'mpeg')
+            part.set_payload(f.read())
+            encoders.encode_base64(part)
+            part.add_header('Content-Disposition', 'attachment', filename='morning_briefing.mp3')
+            msg.attach(part)
+
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as s:
+            s.login(os.environ['GMAIL_ADDRESS'], os.environ['GMAIL_APP_PASSWORD'])
+            s.send_message(msg)
+        print("✅ Audio emailed")
+        EOF
+      env:
+        GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+        GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        AZURE_SPEECH_KEY: ${{ secrets.AZURE_SPEECH_KEY }}
+        AZURE_SPEECH_REGION: ${{ secrets.AZURE_SPEECH_REGION }}
